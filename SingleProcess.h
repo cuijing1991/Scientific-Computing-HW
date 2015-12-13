@@ -11,10 +11,15 @@
 
 #include <vector>
 #include <gsl/gsl_matrix.h>
+#include <iostream>
+
 using std::vector;
 
 class SingleProcess {
 public:
+    
+    int counts;
+    
     /* Constructor and Destructor */
     SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax, double Bfield);
     ~SingleProcess() {};
@@ -23,8 +28,9 @@ public:
     void applyHamiltonian();
     
     /* Update psi[counts+1] according to alpha and beta, increment counts */
-    void updatePsi();
-    
+    void updatePsiA();
+    void updatePsiB();
+
     /* Inner product of psi[i] and psi[j], only take real part. conjugate(transpose(psi[i])) * psi[j]
      * Because those inner product that matters in the computation all return real numbers.
      */
@@ -32,17 +38,17 @@ public:
 
     /* Set alpha and beta */
     void setAlpha(double a) { alpha[counts] = a; };
-    void setBeta(double b) { beta[counts - 1] = b; };
+    void setBeta(double b) { beta[counts] = b; };
     
     /* Get alpha and beta */
     double getAlpha() {return alpha[counts]; }
-    double getBeta() {return beta[counts-1]; }
+    double getBeta() {return beta[counts]; }
     
     /* Set psi, increment counts */
     void setPsi(const vector<double>& Psi);
     
     /* Get psi by index */
-    std::vector<double>& getPsi(int i) {return psi[i]; }
+    std::vector<double> getPsi(int i) {return psi[i]; }
     
     /* Set boundary vectors */
     void setTopBoundary(const vector<double>& tb) { topBoundary = tb; };
@@ -59,7 +65,7 @@ public:
     
     
 private:
-    int N, kmax, pmax, kpmax, counts;
+    int N, kmax, pmax, kpmax;
     double Ymin, Ymax;
     double B;
     std::vector<double> alpha, beta;

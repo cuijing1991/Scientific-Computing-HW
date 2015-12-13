@@ -8,8 +8,11 @@
 #include <vector>
 #include <chrono>
 #include <random>
+#include <iostream>
 
 using std::vector;
+using std::cout;
+using std::endl;
 
 SingleProcess::SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax, double Bfield):
     counts(0),
@@ -30,14 +33,15 @@ SingleProcess::SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax
     std::uniform_real_distribution<double> distribution(0.0,1.0);
     
     for(int i = 0; i < N * N; i++) {
-        psi[0][i] = distribution(generator);
+        psi[0][2*i] = distribution(generator);
+        psi[0][2*i+1] = 0;
     }
     for(int i = 0; i < N; i++) {
         Y[i]= (i + 0.5) * (Ymax - Ymin) / N;
     }
-    double norm = innerProduct(0, 0);
+    double norm = sqrt(innerProduct(0, 0));
     for(int i = 0; i < N * N; i++) {
-        psi[0][i] = psi[0][i]/norm;
+        psi[0][2*i] = psi[0][2*i]/norm/2;
     }
 }
 
@@ -68,8 +72,8 @@ void SingleProcess::applyHamiltonian() {
             psi[counts+1][2*i+1] += (- h * h / (2 * m)) * psi[counts][2*i+1-2*N] / a2;
         }
         else {
-            psi[counts+1][2*i] += (- h * h / (2 * m)) * topBoundary[2*i] / a2;
-            psi[counts+1][2*i+1] += (- h * h / (2 * m)) * topBoundary[2*i+1] / a2;
+            psi[counts+1][2*i] += (- h * h / (2 * m)) * topBoundary[2*(i % N)] / a2;
+            psi[counts+1][2*i+1] += (- h * h / (2 * m)) * topBoundary[2*(i % N)+1] / a2;
         }
         if (i % N != 0) {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * psi[counts][2*i-2] / a2;
@@ -79,11 +83,11 @@ void SingleProcess::applyHamiltonian() {
             psi[counts+1][2*i+1] += -(q * h / m) * (-B) * Y[i/N] * psi[counts][2*i-2] / a / 2;
         }
         else {
-            psi[counts+1][2*i] += (- h * h / (2 * m)) * leftBoundary[2*i] / a2;
-            psi[counts+1][2*i+1] += (- h * h / (2 * m)) * leftBoundary[2*i+1] / a2;
+            psi[counts+1][2*i] += (- h * h / (2 * m)) * leftBoundary[2*(i / N)] / a2;
+            psi[counts+1][2*i+1] += (- h * h / (2 * m)) * leftBoundary[2*(i / N)+1] / a2;
             // second term at boundary:
-            psi[counts+1][2*i] += (- q * h / m) * (-B) * Y[i/N] * leftBoundary[2*i+1] / a / 2;
-            psi[counts+1][2*i+1] += (q * h / m) * (-B) * Y[i/N] * leftBoundary[2*i] / a / 2;
+            psi[counts+1][2*i] += (- q * h / m) * (-B) * Y[i/N] * leftBoundary[2*(i / N)+1] / a / 2;
+            psi[counts+1][2*i+1] += (q * h / m) * (-B) * Y[i/N] * leftBoundary[2*(i / N)] / a / 2;
         }
         if (i % N != N-1) {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * psi[counts][2*i+2] / a2;
@@ -93,35 +97,44 @@ void SingleProcess::applyHamiltonian() {
             psi[counts+1][2*i+1] += (q * h / m) * (-B) * Y[i/N] * psi[counts][2*i+2] / a / 2;
         }
         else {
-            psi[counts+1][2*i] += (- h * h / (2 * m)) * rightBoundary[2*i] / a2;
-            psi[counts+1][2*i+1] += (- h * h / (2 * m)) * rightBoundary[2*i+1] / a2;
+            psi[counts+1][2*i] += (- h * h / (2 * m)) * rightBoundary[2*(i / N)] / a2;
+            psi[counts+1][2*i+1] += (- h * h / (2 * m)) * rightBoundary[2*(i / N)+1] / a2;
             // second term at boundary:
-            psi[counts+1][2*i] += (- q * h / m) * (-B) * Y[i/N] * psi[counts][2*i+1] / a / 2;
-            psi[counts+1][2*i+1] += (q * h / m) * (-B) * Y[i/N] * psi[counts][2*i] / a / 2;
+            psi[counts+1][2*i] += (- q * h / m) * (-B) * Y[i/N] * rightBoundary[2*(i / N)+1] / a / 2;
+            psi[counts+1][2*i+1] += (q * h / m) * (-B) * Y[i/N] * rightBoundary[2*(i / N)] / a / 2;
         }
         if (i + N < N * N) {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * psi[counts][2*i+2*N] / a2;
             psi[counts+1][2*i+1] += (- h * h / (2 * m)) * psi[counts][2*i+1+2*N] / a2;
         }
         else {
-            psi[counts+1][2*i] += (- h * h / (2 * m)) * bottomBoundary[2*i] / a2;
-            psi[counts+1][2*i+1] += (- h * h / (2 * m)) * bottomBoundary[2*i+1] / a2;
+            psi[counts+1][2*i] += (- h * h / (2 * m)) * bottomBoundary[2*(i % N)] / a2;
+            psi[counts+1][2*i+1] += (- h * h / (2 * m)) * bottomBoundary[2*(i % N)+1] / a2;
         }
     }
+    alpha[counts] = innerProduct(counts+1, counts);
+//    for (int i = 0; i < N * N * 2; i++) {
+//        cout <<  "psi[counts+1][" << i << "]" << psi[counts+1][i] << " " << psi[counts][i] << endl;
+//    }
+//    cout << "----- * ------ * -------" << alpha[counts] << endl;
 }
 
-void SingleProcess::updatePsi() {
+void SingleProcess::updatePsiA() {
     
-    for (int j = 0; j < N * N; j++) {
+    for (int j = 0; j < 2 * N * N; j++) {
         psi[counts+1][j] -= alpha[counts] * psi[counts][j];
     }
     if (counts > 0) {
-        for (int j = 0; j < N * N; j++) {
+        for (int j = 0; j < 2 * N * N; j++) {
             psi[counts+1][j] -= beta[counts-1] * psi[counts-1][j];
         }
     }
-    beta[counts] = sqrt ( innerProduct(counts+1, counts+1) );
-    for (int j = 0; j < N * N; j++) {
+    beta[counts] = innerProduct(counts+1, counts+1);
+    /**********************/
+}
+
+void SingleProcess::updatePsiB() {
+    for (int j = 0; j < 2 * N * N; j++) {
         psi[counts+1][j] = psi[counts+1][j] / beta[counts];
     }
     counts++;
@@ -149,7 +162,7 @@ std::vector<double> SingleProcess::getBottomBoundary() {
     for (int i = 0 ; i < N; i++) {
         boundaryData[2*i] = psi[counts][2*N*(N-1)+2*i];
         boundaryData[2*i+1] = psi[counts][2*N*(N-1)+2*i+1];
-    }
+      }
     return boundaryData;
 }
 
@@ -158,7 +171,7 @@ std::vector<double> SingleProcess::getLeftBoundary() {
     for (int i = 0 ; i < N; i++) {
         boundaryData[2*i] = psi[counts][2*N*i];
         boundaryData[2*i+1] = psi[counts][2*N*i+1];
-    }
+     }
     return boundaryData;
 }
 

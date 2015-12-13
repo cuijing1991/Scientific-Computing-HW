@@ -9,6 +9,10 @@
 #include<vector>
 #include<cmath>
 #include <mpi.h>
+#include <gsl/gsl_errno.h>
+#include <gsl/gsl_blas.h>
+#include <gsl/gsl_math.h>
+
 #include <gsl/gsl_matrix.h>
 #include <gsl/gsl_vector.h>
 #include <gsl/gsl_eigen.h>
@@ -23,10 +27,10 @@ using std::endl;
 const double eps = 0.000001;
 const int nrestart = 10;
 const int kmax = 5;
-const int pmax = 20;
+const int pmax = 10;
 const int kpmax = kmax + pmax;
-const double L = 10.0;
-const int Ntot = 128;
+const double L = 1;
+const int Ntot = 32;
 
 
 /* Convert vector index to 2D Cartesian coordinates (x,y) */
@@ -57,78 +61,100 @@ void gsl_matrix_mul(const gsl_matrix *a, const gsl_matrix *b, gsl_matrix *c)
     }
 }
 
+
 /* Compute H matrix */
+
 void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Ymax, double Bfield, gsl_matrix *H, gsl_matrix *V) {
     int top = rank - M;
     int bottom = rank + M;
     int left = rank - 1;
     int right = rank + 1;
-    int N2 = N * N;
+    int N2 = N * N * 2;
 
-    double a(0.0);
-    double b(0.0);
-    double a_tot(0.0);
-    double b_tot(0.0);
+    double a = 0.0;
+    double b = 0.0;
+    double a_tot = 0.0;
+    double b_tot = 0.0;
     
-    vector<vector<double>> Psi(kpmax+1, vector<double>(Ntot * Ntot));
+    vector<vector<double>> Global_Psi(kpmax+1, vector<double>(Ntot * Ntot * 2));
+    vector<vector<double>> Local_Psi(kpmax+1, vector<double>(N2));
     
-    vector<double> topSendBuffer;
-    vector<double> bottomSendBuffer;
-    vector<double> leftSendBuffer;
-    vector<double> rightSendBuffer;
+    vector<double> topSendBuffer(N*2, 0.0);
+    vector<double> bottomSendBuffer(N*2, 0.0);
+    vector<double> leftSendBuffer(N*2, 0.0);
+    vector<double> rightSendBuffer(N*2, 0.0);
     
-    vector<double> topReceiveBuffer(N2, 0.0);
-    vector<double> bottomReceiveBuffer(N2, 0.0);
-    vector<double> leftReceiveBuffer(N2, 0.0);
-    vector<double> rightReceiveBuffer(N2, 0.0);
+    vector<double> topReceiveBuffer(N*2, 0.0);
+    vector<double> bottomReceiveBuffer(N*2, 0.0);
+    vector<double> leftReceiveBuffer(N*2, 0.0);
+    vector<double> rightReceiveBuffer(N*2, 0.0);
     
-    SingleProcess sp(N, Ymin, Ymax, kmax, pmax, Bfield);
+    SingleProcess sp (N, Ymin, Ymax, kmax, pmax, Bfield);
     
-    for (int i = 0; i < start; i++) {
-        for (int j = 0; j < N * N; j++) {
-            Psi[i][j] = gsl_matrix_get(V, j + rank * N * N, i);
-            sp.setPsi(Psi[i]);
+    for (int itr = 0; itr < start; itr++) {
+        for (int j = 0; j < N2; j++) {
+            Local_Psi[itr][j] = gsl_matrix_get(V, j + rank * N2, itr);
         }
+        sp.setAlpha(gsl_matrix_get(H, itr, itr));
+        sp.setBeta(gsl_matrix_get(H, itr, itr+1));
+        sp.setPsi(Local_Psi[itr]);
     }
     
+    for (int itr = 0; itr < start; itr++) {
+        for (int j = 0; j < Ntot * Ntot * 2; j++) {
+            Global_Psi[itr][j] = gsl_matrix_get(V, j, itr);
+        }
+    }
+    if(start > 0) {sp.counts -= 1;}
+    
     for (int itr = start; itr < end; itr++ ) {
+        
+        a_tot = 0.0;
+        b_tot = 0.0;
+        
         topSendBuffer = sp.getTopBoundary();
         bottomSendBuffer = sp.getBottomBoundary();
         leftSendBuffer = sp.getLeftBoundary();
         rightSendBuffer = sp.getRightBoundary();
         
-        // Use MPI blocking send and receive
-        // Send to bottom:
-        if (rank / M % 2 == 0) { MPI::COMM_WORLD.Send(&bottomSendBuffer.front(), N2, MPI::DOUBLE, bottom, 0); }
-        else { MPI::COMM_WORLD.Recv(&topReceiveBuffer.front(), N2, MPI::DOUBLE, top, 0); }
-        if (rank / M % 2 == 1) { if(rank / M != M-1) MPI::COMM_WORLD.Send(&bottomSendBuffer.front(), N2, MPI::DOUBLE, bottom, 0); }
-        else { if(rank / M != 0) MPI::COMM_WORLD.Recv(&topReceiveBuffer.front(), N2, MPI::DOUBLE, top, 0); }
         
-        //Send to top:
-        if (rank / M % 2 == 1) { MPI::COMM_WORLD.Send(&topSendBuffer.front(), N2, MPI::DOUBLE, top, 0); }
-        else { MPI::COMM_WORLD.Recv(&bottomReceiveBuffer.front(), N2, MPI::DOUBLE, bottom, 0); }
-        if (rank / M % 2 == 0) { if(rank / M != 0) MPI::COMM_WORLD.Send(&topSendBuffer.front(), N2, MPI::DOUBLE, top, 0); }
-        else { if(rank / M != M-1) MPI::COMM_WORLD.Recv(&bottomReceiveBuffer.front(), N2, MPI::DOUBLE, bottom, 0); }
+        // Use MPI blocking send and receive
+        // Send to top:
+        if (rank / M % 2 == 1) { MPI::COMM_WORLD.Send(&topSendBuffer.front(), N*2, MPI::DOUBLE, top, 0); }
+        else { MPI::COMM_WORLD.Recv(&bottomReceiveBuffer.front(), N*2, MPI::DOUBLE, bottom, 0); }
+        if (rank / M % 2 == 0) { if(rank / M != 0) MPI::COMM_WORLD.Send(&topSendBuffer.front(), N*2, MPI::DOUBLE, top, 0); }
+        else { if(rank / M != M-1) MPI::COMM_WORLD.Recv(&bottomReceiveBuffer.front(), N*2, MPI::DOUBLE, bottom, 0); }
+
+        // Send to bottom:
+        if (rank / M % 2 == 0) { MPI::COMM_WORLD.Send(&bottomSendBuffer.front(), N*2, MPI::DOUBLE, bottom, 0); }
+        else { MPI::COMM_WORLD.Recv(&topReceiveBuffer.front(), N*2, MPI::DOUBLE, top, 0); }
+        if (rank / M % 2 == 1) { if(rank / M != M-1) MPI::COMM_WORLD.Send(&bottomSendBuffer.front(), N*2, MPI::DOUBLE, bottom, 0); }
+        else { if(rank / M != 0) MPI::COMM_WORLD.Recv(&topReceiveBuffer.front(), N*2, MPI::DOUBLE, top, 0); }
+        
         
         //Send to right:
-        if (rank % M % 2 == 0) { MPI::COMM_WORLD.Send(&rightSendBuffer.front(), N2, MPI::DOUBLE, right, 0); }
-        else { MPI::COMM_WORLD.Recv(&leftReceiveBuffer.front(), N2, MPI::DOUBLE, left, 0); }
-        if (rank % M % 2 == 1) { if(rank % M != M-1) MPI::COMM_WORLD.Send(&rightSendBuffer.front(), N2, MPI::DOUBLE, right, 0); }
-        else { if(rank % M != 0) MPI::COMM_WORLD.Recv(&leftReceiveBuffer.front(), N2, MPI::DOUBLE, left, 0); }
-        
+        if (rank % M % 2 == 0) { MPI::COMM_WORLD.Send(&rightSendBuffer.front(), N*2, MPI::DOUBLE, right, 2); }
+        else { MPI::COMM_WORLD.Recv(&leftReceiveBuffer.front(), N*2, MPI::DOUBLE, left, 2); }
+        if (rank % M % 2 == 1) { if(rank % M != M-1) MPI::COMM_WORLD.Send(&rightSendBuffer.front(), N*2, MPI::DOUBLE, right, 2); }
+        else { if(rank % M != 0) MPI::COMM_WORLD.Recv(&leftReceiveBuffer.front(), N*2, MPI::DOUBLE, left, 2); }
+
         //Send to left:
-        if (rank % M % 2 == 1) { MPI::COMM_WORLD.Send(&leftSendBuffer.front(), N2, MPI::DOUBLE, left, 0); }
-        else { MPI::COMM_WORLD.Recv(&rightReceiveBuffer.front(), N2, MPI::DOUBLE, right, 0); }
-        if (rank % M % 2 == 0) { if(rank % M != 0) MPI::COMM_WORLD.Send(&leftSendBuffer.front(), N2, MPI::DOUBLE, left, 0); }
-        else { if(rank % M != M-1) MPI::COMM_WORLD.Recv(&rightReceiveBuffer.front(), N2, MPI::DOUBLE, right, 0); }
+        if (rank % M % 2 == 1) { MPI::COMM_WORLD.Send(&leftSendBuffer.front(), N*2, MPI::DOUBLE, left, 0); }
+        else { MPI::COMM_WORLD.Recv(&rightReceiveBuffer.front(), N*2, MPI::DOUBLE, right, 0); }
+        if (rank % M % 2 == 0) { if(rank % M != 0) MPI::COMM_WORLD.Send(&leftSendBuffer.front(), N*2, MPI::DOUBLE, left, 0); }
+        else { if(rank % M != M-1) MPI::COMM_WORLD.Recv(&rightReceiveBuffer.front(), N*2, MPI::DOUBLE, right, 0); }
+
         
         sp.setTopBoundary(topReceiveBuffer);
         sp.setBottomBoundary(bottomReceiveBuffer);
         sp.setLeftBoundary(leftReceiveBuffer);
         sp.setRightBoundary(rightReceiveBuffer);
         
+        
         sp.applyHamiltonian();
         a = sp.getAlpha();
+        //cout << "local a from rank :" << rank << " a = " << a << endl;
+        
         // Master receives a from each worker and computes sum
         MPI::COMM_WORLD.Reduce(&a, &a_tot, 1, MPI::DOUBLE, MPI::SUM, 0);
         MPI::COMM_WORLD.Bcast(&a_tot, 1, MPI::DOUBLE, 0);
@@ -137,22 +163,31 @@ void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Yma
             gsl_matrix_set(H, itr, itr, a_tot);
         }
         sp.setAlpha(a_tot);
+        cout << "global a from rank :" << rank << " a_tot = " << a_tot << endl;
+        sp.updatePsiA();
         
-        if (itr > 0) {
-            b = sp.getBeta();
-            MPI::COMM_WORLD.Reduce(&b, &b_tot, 1, MPI::DOUBLE, MPI::SUM, 0);
-            MPI::COMM_WORLD.Bcast(&b_tot, 1, MPI::DOUBLE, 0);
-            if(rank == 0) {
-                gsl_matrix_set(H, itr, itr-1, b_tot);
-                gsl_matrix_set(H, itr-1, itr, b_tot);
-            }
-            sp.setBeta(b_tot);
+        b = sp.getBeta();
+        //cout << "local b from rank :" << rank << " b = " << b << endl;
+
+        MPI::COMM_WORLD.Reduce(&b, &b_tot, 1, MPI::DOUBLE, MPI::SUM, 0);
+        if (rank == 0) b_tot = sqrt(b_tot);
+        MPI::COMM_WORLD.Bcast(&b_tot, 1, MPI::DOUBLE, 0);
+        if(rank == 0 && itr < kpmax-1) {
+            gsl_matrix_set(H, itr, itr+1, b_tot);
+            gsl_matrix_set(H, itr+1, itr, b_tot);
         }
+        sp.setBeta(b_tot);
+        //cout << "global b from rank :" << rank << " b_tot = " << b_tot << endl;
+        
+        sp.updatePsiB();
     }
+    
     for (int i = start; i <= end; i++) {
-        MPI::COMM_WORLD.Gather(&sp.getPsi(i), N * N, MPI::DOUBLE, &Psi[i], N * N, MPI::DOUBLE, 0);
-        for (int j = 0; j < Ntot * Ntot; j++) {
-            gsl_matrix_set(V, j, i, Psi[i][j]);
+        MPI::COMM_WORLD.Gather(&(sp.getPsi(i).front()), N2, MPI::DOUBLE, &(Global_Psi[i].front()), N2, MPI::DOUBLE, 0);
+        if( rank == 0) {
+            for (int j = 0; j < Ntot * Ntot; j++) {
+                gsl_matrix_set(V, j, i, Global_Psi[i][j]);
+            }
         }
     }
 }
@@ -171,12 +206,9 @@ int main(int argc, char *argv[]) {
     int M = sqrt(np);
     int N = Ntot / M;
     
-    int kmax = 5;
-    int pmax = 20;
-    int kpmax = kmax + pmax;
-    int Bfield = 1.0;
-    double Ymin = rank / M * (2 * L) - L;
-    double Ymax = (rank / M + 1) * (2 * L) - L;
+    int Bfield = 0.0;
+    double Ymin = rank / M * (2 * L) / M - L;
+    double Ymax = (rank / M + 1) * (2 * L) / M - L;
     
     gsl_matrix *H;
     gsl_matrix *QR;
@@ -194,11 +226,15 @@ int main(int argc, char *argv[]) {
     gsl_matrix *V;
     gsl_matrix *V_new;
     
+    cout << "Hello ---- from rank : " << rank << endl;
+    
+    V = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
+    H = gsl_matrix_alloc(kpmax, kpmax);
+
+    
     if (rank == 0) {
   
-        V = gsl_matrix_alloc(kpmax, Ntot * Ntot);
-        V_new = gsl_matrix_alloc(kpmax, Ntot * Ntot);
-        H = gsl_matrix_alloc(kpmax, kpmax);
+        V_new = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
         QR = gsl_matrix_alloc (kpmax, kpmax);
         Q = gsl_matrix_alloc (kpmax, kpmax);
         Qt = gsl_matrix_alloc (kpmax, kpmax);
@@ -208,6 +244,10 @@ int main(int argc, char *argv[]) {
         tau = gsl_vector_alloc (kpmax);
         Q_new = gsl_matrix_alloc (kpmax, kpmax);
         Hplus_new = gsl_matrix_alloc (kpmax, kpmax);
+        
+        eval = gsl_vector_alloc (kpmax);
+        evec = gsl_matrix_alloc (kpmax, kpmax);
+        w = gsl_eigen_symmv_alloc (kpmax);
     }
     
     
@@ -217,10 +257,11 @@ int main(int argc, char *argv[]) {
                         
     // Initial Lanczos step:
     lanczos(0, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V);
-                                       
+  
     for (int itr = 0; itr < nrestart; itr++) {
         if (rank == 0) {
             gsl_eigen_symmv (H, eval, evec, w);
+            
             gsl_eigen_symmv_sort (eval, evec, GSL_EIGEN_SORT_VAL_ASC);
             
             for (int i = 0; i < kmax; i++) {
@@ -259,7 +300,7 @@ int main(int argc, char *argv[]) {
             
             gsl_matrix_memcpy (Hplus, H);
             gsl_matrix_set_identity (Q);
-            
+           
             for (int p = kmax; p < kpmax; p++) {
                 
                 /* Do pmax shifts */
@@ -279,23 +320,35 @@ int main(int argc, char *argv[]) {
                 gsl_matrix_memcpy (Hplus, Hplus_new);
             }
             gsl_matrix_mul (V, Q, V_new);
-            
-            for (int i = 0; i < Ntot * Ntot ; i++) {
-                for (int j = 0; j < kmax; j++) {
+
+            for(int j = 0; j < kmax; j++) {
+               for (int i = 0; i < Ntot * Ntot ; i++) {
                     gsl_matrix_set(V, i, j, gsl_matrix_get(V, i, j));
                 }
-                gsl_matrix_set(H, i, i, gsl_matrix_get (Hplus, i, i));
-                if ( i > 0) {
-                    gsl_matrix_set(H, i-1, i, gsl_matrix_get (Hplus, i-1, i));
-                    gsl_matrix_set(H, i, i-1, gsl_matrix_get (Hplus, i, i-1));
+                gsl_matrix_set(H, j, j, gsl_matrix_get (Hplus, j, j));
+                if ( j > 0) {
+                    gsl_matrix_set(H, j-1, j, gsl_matrix_get (Hplus, j-1, j));
+                    gsl_matrix_set(H, j, j-1, gsl_matrix_get (Hplus, j, j-1));
                 }
             }
-            
+        
             cout << "Lanczos Iteration : " << itr << endl;
-            lanczos(kmax-1, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V);
         }
-
-        gsl_matrix_free (H);
+        
+        MPI_Barrier(MPI_COMM_WORLD);
+        cout << "Test" << endl;
+        MPI::COMM_WORLD.Bcast(V->data, Ntot * Ntot * 2 * (kpmax+1), MPI::DOUBLE, 0);
+        MPI::COMM_WORLD.Bcast(H->data, kpmax * kpmax, MPI::DOUBLE, 0);
+        cout << "Test2" << endl;
+        MPI_Barrier(MPI_COMM_WORLD);
+        lanczos(kmax-1, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V);
+    }
+    
+    
+    gsl_matrix_free (H);
+    gsl_matrix_free (V);
+    if(rank == 0) {
+        
         gsl_eigen_symmv_free (w);
         gsl_vector_free (eval);
         gsl_matrix_free (evec);
@@ -308,9 +361,9 @@ int main(int argc, char *argv[]) {
         gsl_matrix_free (Hplus_new);
         gsl_matrix_free (Q_new);
         gsl_matrix_free (I);
-        gsl_matrix_free (V);
         gsl_matrix_free (V_new);
     }
+
     // Close MPI
     MPI::Finalize();
 }
