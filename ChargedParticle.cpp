@@ -26,12 +26,236 @@ using namespace std;
 
 
 const double eps = 0.0001;
-const int nrestart = 600;
+const int nrestart = 2000;
 const int kmax = 4;
-const int pmax = 20;
+const int pmax = 40;
 const int kpmax = kmax + pmax;
-const double L = 1;
+const double L = 20;
 const int Ntot = 128;
+
+
+/* Convert vector index to 2D Cartesian coordinates (x,y) */
+vector<int> index_to_cartesian(const int& i, const int& N);
+/* Compute H matrix */
+void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Ymax, double Bfield, gsl_matrix *H, gsl_matrix *V, int np) ;
+/* Matrix Multiplication */
+void gsl_matrix_mul(const gsl_matrix *a, const gsl_matrix *b, gsl_matrix *c);
+
+
+
+int main(int argc, char *argv[]) {
+    // Set up the grid
+    // Physical length of the system is (2*L) * (2*L)
+    // Node number is M * M = np, assume N is even
+    // Grid Size in each node is N * N
+    // Ntot = M * N
+    
+    // Initialize MPI:
+    MPI::Init(argc, argv);
+    int rank = MPI::COMM_WORLD.Get_rank();
+    int np = MPI::COMM_WORLD.Get_size();
+    int M = sqrt(np);
+    int N = Ntot / M;
+    
+    double Bfield = 0.01;
+    double Ymin = rank / M * (2 * L) / M - L;
+    double Ymax = (rank / M + 1) * (2 * L) / M - L;
+    
+    cout << "Rank = " << rank << "  Ymin = " << Ymin << "   Ymax = " << Ymax << endl;
+    
+    bool converged = false;
+    
+    gsl_matrix *H;
+    gsl_matrix *QR;
+    gsl_matrix *Q;
+    gsl_matrix *Qt;
+    gsl_matrix *R;
+    gsl_matrix *Hplus;
+    gsl_matrix *I;
+    gsl_vector *tau;
+    gsl_matrix *Q_new;
+    gsl_matrix *Hplus_new;
+    gsl_vector *eval;
+    gsl_matrix *evec;
+    gsl_eigen_symmv_workspace *w;
+    gsl_matrix *V;
+    gsl_matrix *V_new;
+    
+    V = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
+    H = gsl_matrix_alloc(kpmax, kpmax);
+    
+    
+    if (rank == 0) {
+        
+        V_new = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
+        QR = gsl_matrix_alloc (kpmax, kpmax);
+        Q = gsl_matrix_alloc (kpmax, kpmax);
+        Qt = gsl_matrix_alloc (kpmax, kpmax);
+        R = gsl_matrix_alloc (kpmax, kpmax);
+        Hplus = gsl_matrix_alloc (kpmax, kpmax);
+        I = gsl_matrix_alloc (kpmax, kpmax);
+        tau = gsl_vector_alloc (kpmax);
+        Q_new = gsl_matrix_alloc (kpmax, kpmax);
+        Hplus_new = gsl_matrix_alloc (kpmax, kpmax);
+        
+        eval = gsl_vector_alloc (kpmax);
+        evec = gsl_matrix_alloc (kpmax, kpmax);
+        w = gsl_eigen_symmv_alloc (kpmax);
+    }
+    
+    
+    vector<double> EigenValue(kmax);
+    vector<vector<double>> EigenVector(kmax, vector<double>(2 * Ntot * Ntot));
+    int eknown;
+    
+    // Initial Lanczos step:
+    lanczos(0, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V, np);
+    
+    for (int itr = 0; itr < nrestart; itr++) {
+        if (rank == 0) {
+            gsl_eigen_symmv (H, eval, evec, w);
+            
+            gsl_eigen_symmv_sort (eval, evec, GSL_EIGEN_SORT_VAL_ASC);
+            
+            for (int i = 0; i < kmax; i++) {
+                double eval_i = gsl_vector_get (eval, i);
+                cout << "Eigenvalue " << i << " = " << eval_i << endl;
+            }
+            
+            /****************    Check for convergence of eigenvalues       *************************/
+            /*************    If converged, save eigenvector and eigenvalue     *********************/
+            eknown = 0;
+            double tmp;
+            
+            if (itr > 0) {
+                for (int k = 0; k < kmax; k++) {
+                    tmp = std::abs ((EigenValue[k] - gsl_vector_get (eval, k))/EigenValue[k]);
+                    if ( tmp < eps )
+                        eknown = eknown + 1;
+                    EigenValue[k] = gsl_vector_get (eval, k);
+                }
+            }
+            cout << eknown << " Eigenvalues Converged" << endl;
+            
+            if ( eknown == kmax ) {
+                for (int k = 0; k < kmax; k++) {
+                    EigenValue[k] = gsl_vector_get (eval, k);
+                    for (int n = 0; n < Ntot * Ntot * 2; n++) {
+                        EigenVector[k][n] = 0.0;
+                        for (int m = 0; m < kpmax; m++) {
+                            EigenVector[k][n] += gsl_matrix_get(V, n, m) * gsl_matrix_get ( evec, m, k);
+                        }
+                    }
+                }
+                
+                converged = true;
+                
+            }
+            /*****************************************************************************************/
+            
+            gsl_matrix_memcpy (Hplus, H);
+            gsl_matrix_set_identity (Q);
+            
+            for (int p = kmax; p < kpmax; p++) {
+                
+                /* Do pmax shifts */
+                gsl_matrix_set_identity (I);
+                gsl_matrix_memcpy (QR, Hplus);
+                gsl_matrix_scale (I, gsl_vector_get (eval, p));
+                gsl_matrix_sub (QR, I);
+                gsl_linalg_QR_decomp (QR, tau);
+                gsl_linalg_QR_unpack (QR, tau, Qt, R);
+                
+                gsl_matrix_mul (Q, Qt, Q_new);
+                gsl_matrix_memcpy (Q, Q_new);
+                gsl_matrix_mul (Hplus, Qt, Hplus_new);
+                gsl_matrix_memcpy (Hplus, Hplus_new);
+                gsl_matrix_transpose (Qt);
+                gsl_matrix_mul (Qt, Hplus, Hplus_new);
+                gsl_matrix_memcpy (Hplus, Hplus_new);
+            }
+            gsl_matrix_mul (V, Q, V_new);
+            
+            for(int j = 0; j < kmax; j++) {
+                for (int i = 0; i < Ntot * Ntot * 2 ; i++) {
+                    gsl_matrix_set(V, i, j, gsl_matrix_get(V_new, i, j));
+                }
+                gsl_matrix_set(H, j, j, gsl_matrix_get (Hplus, j, j));
+                gsl_matrix_set(H, j+1, j, gsl_matrix_get (Hplus, j+1, j));
+                gsl_matrix_set(H, j, j+1, gsl_matrix_get (Hplus, j, j+1));
+            }
+            
+            cout << "Lanczos Iteration : " << itr << endl;
+        }
+        
+        MPI::COMM_WORLD.Bcast(&converged, 1, MPI::BOOL, 0);
+        if(converged) break;
+        else {
+            
+            MPI::COMM_WORLD.Bcast(V->data, Ntot * Ntot * 2 * (kpmax+1), MPI::DOUBLE, 0);
+            MPI::COMM_WORLD.Bcast(H->data, kpmax * kpmax, MPI::DOUBLE, 0);
+            
+            lanczos(kmax-1, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V, np);
+        }
+    }
+    
+    if (rank == 0) {
+        /* Output groundstate to file */
+        ostringstream convert;
+        convert << Ntot;
+        string index = convert.str();
+        ofstream file[kmax];
+        string filename[kmax];
+        int label1;
+        int label2;
+        int rk;
+        int eIndex;
+        for(int k = 0; k < kmax; k++) {
+            convert.str("");
+            convert.clear();
+            convert << k;
+            filename[k] = "eigenvector" + convert.str() + "_" +  index + ".txt";
+            file[k].open(filename[k]);
+            for(int i = 0; i < Ntot; i++) {
+                for(int j = 0; j < Ntot; j++) {
+                    label1 = i / N;
+                    label2 = j / N;
+                    rk = label1 * M + label2;
+                    eIndex = rk * N * N + (i % N) * N + j % N;
+                    file[k]<<EigenVector[k][2*eIndex] << " " <<EigenVector[k][2*eIndex+1] << " ";
+                }
+                file[k]<<endl;
+            }
+            file[k].close();
+        }
+        
+    }
+    gsl_matrix_free (H);
+    gsl_matrix_free (V);
+    if(rank == 0) {
+        
+        gsl_eigen_symmv_free (w);
+        gsl_vector_free (eval);
+        gsl_matrix_free (evec);
+        gsl_vector_free (tau);
+        gsl_matrix_free (QR);
+        gsl_matrix_free (Q);
+        gsl_matrix_free (R);
+        gsl_matrix_free (Hplus);
+        gsl_matrix_free (Qt);
+        gsl_matrix_free (Hplus_new);
+        gsl_matrix_free (Q_new);
+        gsl_matrix_free (I);
+        gsl_matrix_free (V_new);
+    }
+    
+    // Close MPI
+    MPI::Finalize();
+}
+
+
+
+
 
 
 /* Convert vector index to 2D Cartesian coordinates (x,y) */
@@ -64,7 +288,6 @@ void gsl_matrix_mul(const gsl_matrix *a, const gsl_matrix *b, gsl_matrix *c)
 
 
 /* Compute H matrix */
-
 void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Ymax, double Bfield, gsl_matrix *H, gsl_matrix *V, int np) {
     int top = rank - M;
     int bottom = rank + M;
@@ -90,7 +313,7 @@ void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Yma
     vector<double> leftReceiveBuffer(N*2, 0.0);
     vector<double> rightReceiveBuffer(N*2, 0.0);
     
-    SingleProcess sp (N, Ymin, Ymax, kmax, pmax, Bfield, np);
+    SingleProcess sp (N, rank, M, L, kmax, pmax, Bfield, np);
     
     if (start > 0) {
     
@@ -198,214 +421,6 @@ void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Yma
             }
         }
     }
-}
-
-int main(int argc, char *argv[]) {
-    // Set up the grid
-    // Physical length of the system is (2*L) * (2*L)
-    // Node number is M * M = np, assume N is even
-    // Grid Size in each node is N * N
-    // Ntot = M * N
-    
-    // Initialize MPI:
-    MPI::Init(argc, argv);
-    int rank = MPI::COMM_WORLD.Get_rank();
-    int np = MPI::COMM_WORLD.Get_size();
-    int M = sqrt(np);
-    int N = Ntot / M;
-    
-    double Bfield = 10;
-    double Ymin = rank / M * (2 * L) / M - L;
-    double Ymax = (rank / M + 1) * (2 * L) / M - L;
-    
-    bool converged = false;
-    
-    gsl_matrix *H;
-    gsl_matrix *QR;
-    gsl_matrix *Q;
-    gsl_matrix *Qt;
-    gsl_matrix *R;
-    gsl_matrix *Hplus;
-    gsl_matrix *I;
-    gsl_vector *tau;
-    gsl_matrix *Q_new;
-    gsl_matrix *Hplus_new;
-    gsl_vector *eval;
-    gsl_matrix *evec;
-    gsl_eigen_symmv_workspace *w;
-    gsl_matrix *V;
-    gsl_matrix *V_new;
-    
-    V = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
-    H = gsl_matrix_alloc(kpmax, kpmax);
-
-    
-    if (rank == 0) {
-  
-        V_new = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
-        QR = gsl_matrix_alloc (kpmax, kpmax);
-        Q = gsl_matrix_alloc (kpmax, kpmax);
-        Qt = gsl_matrix_alloc (kpmax, kpmax);
-        R = gsl_matrix_alloc (kpmax, kpmax);
-        Hplus = gsl_matrix_alloc (kpmax, kpmax);
-        I = gsl_matrix_alloc (kpmax, kpmax);
-        tau = gsl_vector_alloc (kpmax);
-        Q_new = gsl_matrix_alloc (kpmax, kpmax);
-        Hplus_new = gsl_matrix_alloc (kpmax, kpmax);
-        
-        eval = gsl_vector_alloc (kpmax);
-        evec = gsl_matrix_alloc (kpmax, kpmax);
-        w = gsl_eigen_symmv_alloc (kpmax);
-    }
-    
-    
-    vector<double> EigenValue(kmax);
-    vector<vector<double>> EigenVector(kmax, vector<double>(2 * Ntot * Ntot));
-    int eknown;
-                        
-    // Initial Lanczos step:
-    lanczos(0, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V, np);
-  
-    for (int itr = 0; itr < nrestart; itr++) {
-        if (rank == 0) {
-            gsl_eigen_symmv (H, eval, evec, w);
-            
-            gsl_eigen_symmv_sort (eval, evec, GSL_EIGEN_SORT_VAL_ASC);
-            
-            for (int i = 0; i < kmax; i++) {
-                double eval_i = gsl_vector_get (eval, i);
-                cout << "Eigenvalue " << i << " = " << eval_i << endl;
-            }
-            
-            /****************    Check for convergence of eigenvalues       *************************/
-            /*************    If converged, save eigenvector and eigenvalue     *********************/
-            eknown = 0;
-            double tmp;
-            
-            if (itr > 0) {
-                for (int k = 0; k < kmax; k++) {
-                    tmp = std::abs ((EigenValue[k] - gsl_vector_get (eval, k))/EigenValue[k]);
-                    if ( tmp < eps )
-                        eknown = eknown + 1;
-                    EigenValue[k] = gsl_vector_get (eval, k);
-                }
-            }
-            cout << eknown << " Eigenvalues Converged" << endl;
-            
-            if ( eknown == kmax ) {
-                for (int k = 0; k < kmax; k++) {
-                    EigenValue[k] = gsl_vector_get (eval, k);
-                    for (int n = 0; n < Ntot * Ntot * 2; n++) {
-                        EigenVector[k][n] = 0.0;
-                        for (int m = 0; m < kpmax; m++) {
-                           EigenVector[k][n] += gsl_matrix_get(V, n, m) * gsl_matrix_get ( evec, m, k);
-                        }
-                    }
-                }
-                
-                converged = true;
-                
-            }
-            /*****************************************************************************************/
-            
-            gsl_matrix_memcpy (Hplus, H);
-            gsl_matrix_set_identity (Q);
-           
-            for (int p = kmax; p < kpmax; p++) {
-                
-                /* Do pmax shifts */
-                gsl_matrix_set_identity (I);
-                gsl_matrix_memcpy (QR, Hplus);
-                gsl_matrix_scale (I, gsl_vector_get (eval, p));
-                gsl_matrix_sub (QR, I);
-                gsl_linalg_QR_decomp (QR, tau);
-                gsl_linalg_QR_unpack (QR, tau, Qt, R);
-                
-                gsl_matrix_mul (Q, Qt, Q_new);
-                gsl_matrix_memcpy (Q, Q_new);
-                gsl_matrix_mul (Hplus, Qt, Hplus_new);
-                gsl_matrix_memcpy (Hplus, Hplus_new);
-                gsl_matrix_transpose (Qt);
-                gsl_matrix_mul (Qt, Hplus, Hplus_new);
-                gsl_matrix_memcpy (Hplus, Hplus_new);
-            }
-            gsl_matrix_mul (V, Q, V_new);
-
-            for(int j = 0; j < kmax; j++) {
-               for (int i = 0; i < Ntot * Ntot * 2 ; i++) {
-                    gsl_matrix_set(V, i, j, gsl_matrix_get(V_new, i, j));
-                }
-                gsl_matrix_set(H, j, j, gsl_matrix_get (Hplus, j, j));
-                gsl_matrix_set(H, j+1, j, gsl_matrix_get (Hplus, j+1, j));
-                gsl_matrix_set(H, j, j+1, gsl_matrix_get (Hplus, j, j+1));
-            }
-        
-            cout << "Lanczos Iteration : " << itr << endl;
-        }
-        
-        MPI::COMM_WORLD.Bcast(&converged, 1, MPI::BOOL, 0);
-        if(converged) break;
-        else {
-            
-            MPI::COMM_WORLD.Bcast(V->data, Ntot * Ntot * 2 * (kpmax+1), MPI::DOUBLE, 0);
-            MPI::COMM_WORLD.Bcast(H->data, kpmax * kpmax, MPI::DOUBLE, 0);
-            
-            lanczos(kmax-1, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V, np);
-        }
-    }
-    
-    if (rank == 0) {
-        /* Output groundstate to file */
-        ostringstream convert;
-        convert << Ntot;
-        string index = convert.str();
-        ofstream file[kmax];
-        string filename[kmax];
-        int label1;
-        int label2;
-        int rk;
-        int eIndex;
-        for(int k = 0; k < kmax; k++) {
-            convert.str("");
-            convert.clear();
-            convert << k;
-            filename[k] = "eigenvector" + convert.str() + "_" +  index + ".txt";
-            file[k].open(filename[k]);
-            for(int i = 0; i < Ntot; i++) {
-                for(int j = 0; j < Ntot; j++) {
-                    label1 = i / N;
-                    label2 = j / N;
-                    rk = label1 * M + label2;
-                    eIndex = rk * N * N + (i % N) * N + j % N;
-                    file[k]<<EigenVector[k][2*eIndex] << " " <<EigenVector[k][2*eIndex+1] << " ";
-                }
-                file[k]<<endl;
-            }
-            file[k].close();
-        }
-
-    }
-    gsl_matrix_free (H);
-    gsl_matrix_free (V);
-    if(rank == 0) {
-        
-        gsl_eigen_symmv_free (w);
-        gsl_vector_free (eval);
-        gsl_matrix_free (evec);
-        gsl_vector_free (tau);
-        gsl_matrix_free (QR);
-        gsl_matrix_free (Q);
-        gsl_matrix_free (R);
-        gsl_matrix_free (Hplus);
-        gsl_matrix_free (Qt);
-        gsl_matrix_free (Hplus_new);
-        gsl_matrix_free (Q_new);
-        gsl_matrix_free (I);
-        gsl_matrix_free (V_new);
-    }
-
-    // Close MPI
-    MPI::Finalize();
 }
 
 

@@ -14,21 +14,27 @@ using std::vector;
 using std::cout;
 using std::endl;
 
-SingleProcess::SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax, double Bfield, int np):
+SingleProcess::SingleProcess(int N, int rank, int M, double L, int kmax, int pmax, double Bfield, int np):
     counts(0),
     N(N),
     kmax(kmax),
     pmax(pmax),
     kpmax(kmax + pmax),
-    Ymin(Ymin),
-    Ymax(Ymax),
     psi(kmax + pmax + 1, vector<double>(N * N * 2)),
-    Y(N),
+    Y(N), X(N),
     B(Bfield),
     alpha(kmax + pmax),
     beta(kmax + pmax),
     orthogonalFactor(kmax + pmax),
-    np(np) {
+    np(np),
+    M(M),
+    rank(rank),
+    L(L) {
+    
+    Ymin = rank / M * (2 * L) / M - L;
+    Ymax = (rank / M + 1) * (2 * L) / M - L;
+    Xmin = rank % M * (2 * L) / M - L;
+    Xmax = (rank % M + 1) * (2 * L) / M - L;
     
     unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
     std::default_random_engine generator(seed);
@@ -39,7 +45,7 @@ SingleProcess::SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax
         psi[0][2*i+1] = 0;
     }
     for(int i = 0; i < N; i++) {
-        Y[i]= (i + 0.5) * (Ymax - Ymin) / N;
+        Y[i] = Ymin + (i + 0.5) * (Ymax - Ymin) / N;
     }
     double norm = sqrt(innerProduct(0, 0));
     for(int i = 0; i < N * N; i++) {
@@ -59,6 +65,11 @@ void SingleProcess::applyHamiltonian() {
     // Real parts and imaginary parts are coupled;
     // Third term in Hamiltonian: Only diagonal (labeled)
     
+    bool symmetry = false;
+    double lambda, gamma;
+    if (symmetry) { lambda = 0.5; gamma = 0.5; }
+    else { lambda = 1; gamma = 0; }
+    
     for (int i = 0; i < N * N; i++) {
         psi[counts+1][2*i] = 0.0;
         psi[counts+1][2*i+1] = 0.0;
@@ -66,52 +77,73 @@ void SingleProcess::applyHamiltonian() {
         psi[counts+1][2*i] += (- h * h / (2 * m)) * (-4.0) * psi[counts][2*i] / a2;
         psi[counts+1][2*i+1] += (- h * h / (2 * m)) * (-4.0) * psi[counts][2*i+1] / a2;
         // third term:
-        psi[counts+1][2*i] += (q * q / (2 * m)) * (B * B) * (Y[i/N] * Y[i/N]) * psi[counts][2*i];
-        psi[counts+1][2*i+1] += (q * q / (2 * m)) * (B * B) * (Y[i/N] * Y[i/N]) * psi[counts][2*i+1];
+        if (symmetry) {
+            psi[counts+1][2*i] += (q * q / (2 * m)) * (B * B) * (0.25 * (Y[i/N] * Y[i/N] + X[i%N] * X[i%N])) * psi[counts][2*i];
+            psi[counts+1][2*i+1] += (q * q / (2 * m)) * (B * B) * (0.25 * (Y[i/N] * Y[i/N] + X[i%N] * X[i%N])) * psi[counts][2*i+1];
+        }
+        else {
+            psi[counts+1][2*i] += (q * q / (2 * m)) * (B * B) * (Y[i/N] * Y[i/N]) * psi[counts][2*i];
+            psi[counts+1][2*i+1] += (q * q / (2 * m)) * (B * B) * (Y[i/N] * Y[i/N]) * psi[counts][2*i+1];
+        }
+        
+        
         
         if (i - N >= 0) {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * psi[counts][2*i-2*N] / a2;
             psi[counts+1][2*i+1] += (- h * h / (2 * m)) * psi[counts][2*i+1-2*N] / a2;
+            // second term off boundary: *************************************
+            psi[counts+1][2*i] += -(- q * h / m) * (B) * X[i%N] * psi[counts][2*i-2*N+1] / a / 2 * gamma;
+            psi[counts+1][2*i+1] += -(q * h / m) * (B) * X[i%N] * psi[counts][2*i-2*N] / a / 2 * gamma;
+            
         }
         else {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * topBoundary[2*(i % N)] / a2;
             psi[counts+1][2*i+1] += (- h * h / (2 * m)) * topBoundary[2*(i % N)+1] / a2;
+            // second term at boundary: *************************************
+            psi[counts+1][2*i] += -(- q * h / m) * (B) * X[i%N] * topBoundary[2*(i % N)+1] / a / 2 * gamma;
+            psi[counts+1][2*i+1] += -(q * h / m) * (B) * X[i%N] * topBoundary[2*(i % N)] / a / 2 * gamma;
         }
         if (i % N != 0) {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * psi[counts][2*i-2] / a2;
             psi[counts+1][2*i+1] += (- h * h / (2 * m)) * psi[counts][2*i+1-2] / a2;
             // second term off boundary:
-            psi[counts+1][2*i] += -(- q * h / m) * (-B) * Y[i/N] * psi[counts][2*i-2+1] / a / 2;
-            psi[counts+1][2*i+1] += -(q * h / m) * (-B) * Y[i/N] * psi[counts][2*i-2] / a / 2;
+            psi[counts+1][2*i] += -(- q * h / m) * (-B) * Y[i/N] * psi[counts][2*i-2+1] / a / 2 * lambda;
+            psi[counts+1][2*i+1] += -(q * h / m) * (-B) * Y[i/N] * psi[counts][2*i-2] / a / 2 * lambda;
         }
         else {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * leftBoundary[2*(i / N)] / a2;
             psi[counts+1][2*i+1] += (- h * h / (2 * m)) * leftBoundary[2*(i / N)+1] / a2;
             // second term at boundary:
-            psi[counts+1][2*i] += -(- q * h / m) * (-B) * Y[i/N] * leftBoundary[2*(i / N)+1] / a / 2;
-            psi[counts+1][2*i+1] += -(q * h / m) * (-B) * Y[i/N] * leftBoundary[2*(i / N)] / a / 2;
+            psi[counts+1][2*i] += -(- q * h / m) * (-B) * Y[i/N] * leftBoundary[2*(i / N)+1] / a / 2 * lambda;
+            psi[counts+1][2*i+1] += -(q * h / m) * (-B) * Y[i/N] * leftBoundary[2*(i / N)] / a / 2 * lambda;
         }
         if (i % N != N-1) {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * psi[counts][2*i+2] / a2;
             psi[counts+1][2*i+1] += (- h * h / (2 * m)) * psi[counts][2*i+1+2] / a2;
             // second term off boundar:
-            psi[counts+1][2*i] += (- q * h / m) * (-B) * Y[i/N] * psi[counts][2*i+2+1] / a / 2;
-            psi[counts+1][2*i+1] += (q * h / m) * (-B) * Y[i/N] * psi[counts][2*i+2] / a / 2;
+            psi[counts+1][2*i] += (- q * h / m) * (-B) * Y[i/N] * psi[counts][2*i+2+1] / a / 2 * lambda;
+            psi[counts+1][2*i+1] += (q * h / m) * (-B) * Y[i/N] * psi[counts][2*i+2] / a / 2 * lambda;
         }
         else {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * rightBoundary[2*(i / N)] / a2;
             psi[counts+1][2*i+1] += (- h * h / (2 * m)) * rightBoundary[2*(i / N)+1] / a2;
             // second term at boundary:
-            psi[counts+1][2*i] += (- q * h / m) * (-B) * Y[i/N] * rightBoundary[2*(i / N)+1] / a / 2;
-            psi[counts+1][2*i+1] += (q * h / m) * (-B) * Y[i/N] * rightBoundary[2*(i / N)] / a / 2;
+            psi[counts+1][2*i] += (- q * h / m) * (-B) * Y[i/N] * rightBoundary[2*(i / N)+1] / a / 2 * lambda;
+            psi[counts+1][2*i+1] += (q * h / m) * (-B) * Y[i/N] * rightBoundary[2*(i / N)] / a / 2 * lambda;
         }
         if (i + N < N * N) {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * psi[counts][2*i+2*N] / a2;
             psi[counts+1][2*i+1] += (- h * h / (2 * m)) * psi[counts][2*i+1+2*N] / a2;
+            // second term off boundary: *************************************
+            psi[counts+1][2*i] += (- q * h / m) * (B) * X[i%N] * psi[counts][2*i+2*N+1] / a / 2 * gamma;
+            psi[counts+1][2*i+1] += (q * h / m) * (B) * X[i%N] * psi[counts][2*i+2*N] / a / 2 * gamma;
         }
         else {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * bottomBoundary[2*(i % N)] / a2;
             psi[counts+1][2*i+1] += (- h * h / (2 * m)) * bottomBoundary[2*(i % N)+1] / a2;
+            // second term at boundary: *************************************
+            psi[counts+1][2*i] += (- q * h / m) * (B) * X[i%N] * bottomBoundary[2*(i % N)+1] / a / 2 * gamma;
+            psi[counts+1][2*i+1] += (q * h / m) * (B) * X[i%N] * bottomBoundary[2*(i % N)] / a / 2 * gamma;
         }
     }
     alpha[counts] = innerProduct(counts+1, counts);

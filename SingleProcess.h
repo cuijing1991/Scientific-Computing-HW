@@ -22,7 +22,7 @@ public:
     vector<double> orthogonalFactor;
     
     /* Constructor and Destructor */
-    SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax, double Bfield, int np);
+    SingleProcess(int N, int rank, int M, double L, int kmax, int pmax, double Bfield, int np);
     ~SingleProcess() {};
     
     /* Apply Hamiltonian to psi[counts] and get new psi[counts+1] */
@@ -66,8 +66,8 @@ public:
     
     
 private:
-    int N, kmax, pmax, kpmax, np;
-    double Ymin, Ymax;
+    int N, kmax, pmax, kpmax, np, M, rank;
+    double Ymin, Ymax, Xmin, Xmax, L;
     double B;
     std::vector<double> alpha, beta;
 
@@ -77,7 +77,7 @@ private:
     std::vector<double> bottomBoundary;
     std::vector<double> leftBoundary;
     std::vector<double> rightBoundary;
-    std::vector<double> Y;
+    std::vector<double> Y, X;
     
 };
 
