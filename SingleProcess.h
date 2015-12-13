@@ -19,9 +19,10 @@ class SingleProcess {
 public:
     
     int counts;
+    vector<double> orthogonalFactor;
     
     /* Constructor and Destructor */
-    SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax, double Bfield);
+    SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax, double Bfield, int np);
     ~SingleProcess() {};
     
     /* Apply Hamiltonian to psi[counts] and get new psi[counts+1] */
@@ -65,7 +66,7 @@ public:
     
     
 private:
-    int N, kmax, pmax, kpmax;
+    int N, kmax, pmax, kpmax, np;
     double Ymin, Ymax;
     double B;
     std::vector<double> alpha, beta;

@@ -6,6 +6,9 @@
  **************************************************************/
 
 #include<iostream>
+#include<fstream>
+#include<sstream>
+#include<string>
 #include<vector>
 #include<cmath>
 #include <mpi.h>
@@ -19,18 +22,16 @@
 #include <gsl/gsl_linalg.h>
 #include "SingleProcess.h"
 
-using std::vector;
-using std::cout;
-using std::endl;
+using namespace std;
 
 
-const double eps = 0.000001;
-const int nrestart = 10;
-const int kmax = 5;
-const int pmax = 10;
+const double eps = 0.0001;
+const int nrestart = 600;
+const int kmax = 4;
+const int pmax = 20;
 const int kpmax = kmax + pmax;
 const double L = 1;
-const int Ntot = 32;
+const int Ntot = 128;
 
 
 /* Convert vector index to 2D Cartesian coordinates (x,y) */
@@ -64,7 +65,7 @@ void gsl_matrix_mul(const gsl_matrix *a, const gsl_matrix *b, gsl_matrix *c)
 
 /* Compute H matrix */
 
-void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Ymax, double Bfield, gsl_matrix *H, gsl_matrix *V) {
+void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Ymax, double Bfield, gsl_matrix *H, gsl_matrix *V, int np) {
     int top = rank - M;
     int bottom = rank + M;
     int left = rank - 1;
@@ -89,18 +90,21 @@ void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Yma
     vector<double> leftReceiveBuffer(N*2, 0.0);
     vector<double> rightReceiveBuffer(N*2, 0.0);
     
-    SingleProcess sp (N, Ymin, Ymax, kmax, pmax, Bfield);
+    SingleProcess sp (N, Ymin, Ymax, kmax, pmax, Bfield, np);
     
-    for (int itr = 0; itr < start; itr++) {
-        for (int j = 0; j < N2; j++) {
-            Local_Psi[itr][j] = gsl_matrix_get(V, j + rank * N2, itr);
+    if (start > 0) {
+    
+        for (int itr = 0; itr <= start; itr++) {
+            for (int j = 0; j < N2; j++) {
+                Local_Psi[itr][j] = gsl_matrix_get(V, j + rank * N2, itr);
+            }
+            sp.setAlpha(gsl_matrix_get(H, itr, itr));
+            sp.setBeta(gsl_matrix_get(H, itr, itr+1));
+            sp.setPsi(Local_Psi[itr]);
         }
-        sp.setAlpha(gsl_matrix_get(H, itr, itr));
-        sp.setBeta(gsl_matrix_get(H, itr, itr+1));
-        sp.setPsi(Local_Psi[itr]);
     }
     
-    for (int itr = 0; itr < start; itr++) {
+    for (int itr = 0; itr <= start; itr++) {
         for (int j = 0; j < Ntot * Ntot * 2; j++) {
             Global_Psi[itr][j] = gsl_matrix_get(V, j, itr);
         }
@@ -163,7 +167,7 @@ void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Yma
             gsl_matrix_set(H, itr, itr, a_tot);
         }
         sp.setAlpha(a_tot);
-        cout << "global a from rank :" << rank << " a_tot = " << a_tot << endl;
+        //cout << "global a from rank :" << rank << " a_tot = " << a_tot << endl;
         sp.updatePsiA();
         
         b = sp.getBeta();
@@ -179,13 +183,17 @@ void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Yma
         sp.setBeta(b_tot);
         //cout << "global b from rank :" << rank << " b_tot = " << b_tot << endl;
         
+        vector<double> temp(kpmax);
+        MPI::COMM_WORLD.Reduce(&(sp.orthogonalFactor.front()), &temp.front(), kpmax, MPI::DOUBLE, MPI::SUM, 0);
+        sp.orthogonalFactor = temp;
+        MPI::COMM_WORLD.Bcast(&sp.orthogonalFactor.front(), kpmax, MPI::DOUBLE, 0);
         sp.updatePsiB();
     }
     
     for (int i = start; i <= end; i++) {
         MPI::COMM_WORLD.Gather(&(sp.getPsi(i).front()), N2, MPI::DOUBLE, &(Global_Psi[i].front()), N2, MPI::DOUBLE, 0);
         if( rank == 0) {
-            for (int j = 0; j < Ntot * Ntot; j++) {
+            for (int j = 0; j < Ntot * Ntot * 2; j++) {
                 gsl_matrix_set(V, j, i, Global_Psi[i][j]);
             }
         }
@@ -206,9 +214,11 @@ int main(int argc, char *argv[]) {
     int M = sqrt(np);
     int N = Ntot / M;
     
-    int Bfield = 0.0;
+    double Bfield = 10;
     double Ymin = rank / M * (2 * L) / M - L;
     double Ymax = (rank / M + 1) * (2 * L) / M - L;
+    
+    bool converged = false;
     
     gsl_matrix *H;
     gsl_matrix *QR;
@@ -225,8 +235,6 @@ int main(int argc, char *argv[]) {
     gsl_eigen_symmv_workspace *w;
     gsl_matrix *V;
     gsl_matrix *V_new;
-    
-    cout << "Hello ---- from rank : " << rank << endl;
     
     V = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
     H = gsl_matrix_alloc(kpmax, kpmax);
@@ -252,11 +260,11 @@ int main(int argc, char *argv[]) {
     
     
     vector<double> EigenValue(kmax);
-    vector<vector<double>> EigenVector(kmax, vector<double>(Ntot * Ntot));
+    vector<vector<double>> EigenVector(kmax, vector<double>(2 * Ntot * Ntot));
     int eknown;
                         
     // Initial Lanczos step:
-    lanczos(0, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V);
+    lanczos(0, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V, np);
   
     for (int itr = 0; itr < nrestart; itr++) {
         if (rank == 0) {
@@ -287,14 +295,16 @@ int main(int argc, char *argv[]) {
             if ( eknown == kmax ) {
                 for (int k = 0; k < kmax; k++) {
                     EigenValue[k] = gsl_vector_get (eval, k);
-                    for (int n = 0; n < N * N; n++) {
+                    for (int n = 0; n < Ntot * Ntot * 2; n++) {
                         EigenVector[k][n] = 0.0;
                         for (int m = 0; m < kpmax; m++) {
                            EigenVector[k][n] += gsl_matrix_get(V, n, m) * gsl_matrix_get ( evec, m, k);
                         }
                     }
                 }
-                break;
+                
+                converged = true;
+                
             }
             /*****************************************************************************************/
             
@@ -322,29 +332,59 @@ int main(int argc, char *argv[]) {
             gsl_matrix_mul (V, Q, V_new);
 
             for(int j = 0; j < kmax; j++) {
-               for (int i = 0; i < Ntot * Ntot ; i++) {
-                    gsl_matrix_set(V, i, j, gsl_matrix_get(V, i, j));
+               for (int i = 0; i < Ntot * Ntot * 2 ; i++) {
+                    gsl_matrix_set(V, i, j, gsl_matrix_get(V_new, i, j));
                 }
                 gsl_matrix_set(H, j, j, gsl_matrix_get (Hplus, j, j));
-                if ( j > 0) {
-                    gsl_matrix_set(H, j-1, j, gsl_matrix_get (Hplus, j-1, j));
-                    gsl_matrix_set(H, j, j-1, gsl_matrix_get (Hplus, j, j-1));
-                }
+                gsl_matrix_set(H, j+1, j, gsl_matrix_get (Hplus, j+1, j));
+                gsl_matrix_set(H, j, j+1, gsl_matrix_get (Hplus, j, j+1));
             }
         
             cout << "Lanczos Iteration : " << itr << endl;
         }
         
-        MPI_Barrier(MPI_COMM_WORLD);
-        cout << "Test" << endl;
-        MPI::COMM_WORLD.Bcast(V->data, Ntot * Ntot * 2 * (kpmax+1), MPI::DOUBLE, 0);
-        MPI::COMM_WORLD.Bcast(H->data, kpmax * kpmax, MPI::DOUBLE, 0);
-        cout << "Test2" << endl;
-        MPI_Barrier(MPI_COMM_WORLD);
-        lanczos(kmax-1, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V);
+        MPI::COMM_WORLD.Bcast(&converged, 1, MPI::BOOL, 0);
+        if(converged) break;
+        else {
+            
+            MPI::COMM_WORLD.Bcast(V->data, Ntot * Ntot * 2 * (kpmax+1), MPI::DOUBLE, 0);
+            MPI::COMM_WORLD.Bcast(H->data, kpmax * kpmax, MPI::DOUBLE, 0);
+            
+            lanczos(kmax-1, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V, np);
+        }
     }
     
-    
+    if (rank == 0) {
+        /* Output groundstate to file */
+        ostringstream convert;
+        convert << Ntot;
+        string index = convert.str();
+        ofstream file[kmax];
+        string filename[kmax];
+        int label1;
+        int label2;
+        int rk;
+        int eIndex;
+        for(int k = 0; k < kmax; k++) {
+            convert.str("");
+            convert.clear();
+            convert << k;
+            filename[k] = "eigenvector" + convert.str() + "_" +  index + ".txt";
+            file[k].open(filename[k]);
+            for(int i = 0; i < Ntot; i++) {
+                for(int j = 0; j < Ntot; j++) {
+                    label1 = i / N;
+                    label2 = j / N;
+                    rk = label1 * M + label2;
+                    eIndex = rk * N * N + (i % N) * N + j % N;
+                    file[k]<<EigenVector[k][2*eIndex] << " " <<EigenVector[k][2*eIndex+1] << " ";
+                }
+                file[k]<<endl;
+            }
+            file[k].close();
+        }
+
+    }
     gsl_matrix_free (H);
     gsl_matrix_free (V);
     if(rank == 0) {

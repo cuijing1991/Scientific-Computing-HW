@@ -14,7 +14,7 @@ using std::vector;
 using std::cout;
 using std::endl;
 
-SingleProcess::SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax, double Bfield):
+SingleProcess::SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax, double Bfield, int np):
     counts(0),
     N(N),
     kmax(kmax),
@@ -26,7 +26,9 @@ SingleProcess::SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax
     Y(N),
     B(Bfield),
     alpha(kmax + pmax),
-    beta(kmax + pmax) {
+    beta(kmax + pmax),
+    orthogonalFactor(kmax + pmax),
+    np(np) {
     
     unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
     std::default_random_engine generator(seed);
@@ -41,7 +43,7 @@ SingleProcess::SingleProcess(int N, double Ymin, double Ymax, int kmax, int pmax
     }
     double norm = sqrt(innerProduct(0, 0));
     for(int i = 0; i < N * N; i++) {
-        psi[0][2*i] = psi[0][2*i]/norm/2;
+        psi[0][2*i] = psi[0][2*i]/norm/sqrt(np);
     }
 }
 
@@ -86,8 +88,8 @@ void SingleProcess::applyHamiltonian() {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * leftBoundary[2*(i / N)] / a2;
             psi[counts+1][2*i+1] += (- h * h / (2 * m)) * leftBoundary[2*(i / N)+1] / a2;
             // second term at boundary:
-            psi[counts+1][2*i] += (- q * h / m) * (-B) * Y[i/N] * leftBoundary[2*(i / N)+1] / a / 2;
-            psi[counts+1][2*i+1] += (q * h / m) * (-B) * Y[i/N] * leftBoundary[2*(i / N)] / a / 2;
+            psi[counts+1][2*i] += -(- q * h / m) * (-B) * Y[i/N] * leftBoundary[2*(i / N)+1] / a / 2;
+            psi[counts+1][2*i+1] += -(q * h / m) * (-B) * Y[i/N] * leftBoundary[2*(i / N)] / a / 2;
         }
         if (i % N != N-1) {
             psi[counts+1][2*i] += (- h * h / (2 * m)) * psi[counts][2*i+2] / a2;
@@ -113,10 +115,7 @@ void SingleProcess::applyHamiltonian() {
         }
     }
     alpha[counts] = innerProduct(counts+1, counts);
-//    for (int i = 0; i < N * N * 2; i++) {
-//        cout <<  "psi[counts+1][" << i << "]" << psi[counts+1][i] << " " << psi[counts][i] << endl;
-//    }
-//    cout << "----- * ------ * -------" << alpha[counts] << endl;
+
 }
 
 void SingleProcess::updatePsiA() {
@@ -130,10 +129,23 @@ void SingleProcess::updatePsiA() {
         }
     }
     beta[counts] = innerProduct(counts+1, counts+1);
-    /**********************/
+    
+    for (int ii = 0; ii <= counts; ii++) {
+        orthogonalFactor[ii] = innerProduct(ii, counts+1);
+    }
 }
 
 void SingleProcess::updatePsiB() {
+    
+    /*  Explict orthogonalization  */
+    double factor;
+    for (int ii = 0; ii <= counts; ii++ ) {
+        factor = innerProduct(ii, counts+1);
+        for (int j = 0; j < N * N * 2; j++) {
+            psi[counts+1][j] -=  orthogonalFactor[ii] * psi[ii][j];
+        }
+    }
+    
     for (int j = 0; j < 2 * N * N; j++) {
         psi[counts+1][j] = psi[counts+1][j] / beta[counts];
     }
@@ -185,7 +197,7 @@ std::vector<double> SingleProcess::getRightBoundary() {
 }
 
 void SingleProcess::setPsi(const vector<double>& psi) {
-    for (int i = 0; i < N * N; i++) {
+    for (int i = 0; i < N * N * 2; i++) {
         this->psi[counts][i] = psi[i];
     }
     counts++;
