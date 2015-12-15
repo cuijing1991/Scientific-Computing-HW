@@ -33,12 +33,13 @@ const int pmax = 40;
 const int kpmax = kmax + pmax;
 const double L = 20;
 const int Ntot = 128;
+const double Bfield = 1;
 
 
 /* Convert vector index to 2D Cartesian coordinates (x,y) */
 vector<int> index_to_cartesian(const int& i, const int& N);
 /* Compute H matrix */
-void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Ymax, double Bfield, gsl_matrix *H, gsl_matrix *V, int np) ;
+void lanczos(int start, int end, int rank, int M, int N, gsl_matrix *H, gsl_matrix *V, gsl_matrix *V_local, int np) ;
 /* Matrix Multiplication */
 void gsl_matrix_mul(const gsl_matrix *a, const gsl_matrix *b, gsl_matrix *c);
 
@@ -57,13 +58,6 @@ int main(int argc, char *argv[]) {
     int np = MPI::COMM_WORLD.Get_size();
     int M = sqrt(np);
     int N = Ntot / M;
-    
-    double Bfield = 1;
-    double Ymin = rank / M * (2 * L) / M - L;
-    double Ymax = (rank / M + 1) * (2 * L) / M - L;
-    
-    cout << "Rank = " << rank << "  Ymin = " << Ymin << "   Ymax = " << Ymax << endl;
-    
     bool converged = false;
     
     gsl_matrix *H;
@@ -81,7 +75,9 @@ int main(int argc, char *argv[]) {
     gsl_eigen_symmv_workspace *w;
     gsl_matrix *V;
     gsl_matrix *V_new;
+    gsl_matrix *V_local;
     
+    V_local = gsl_matrix_alloc(N * N * 2, kpmax+1);
     V = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
     H = gsl_matrix_alloc(kpmax, kpmax);
     
@@ -110,7 +106,7 @@ int main(int argc, char *argv[]) {
     int eknown;
     
     // Initial Lanczos step:
-    lanczos(0, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V, np);
+    lanczos(0, kpmax, rank, M, N, H, V, V_local, np);
     
     for (int itr = 0; itr < nrestart; itr++) {
         if (rank == 0) {
@@ -193,10 +189,9 @@ int main(int argc, char *argv[]) {
         if(converged) break;
         else {
             
-            MPI::COMM_WORLD.Bcast(V->data, Ntot * Ntot * 2 * (kpmax+1), MPI::DOUBLE, 0);
+            MPI::COMM_WORLD.Scatter(V->data, N * N * 2 * (kpmax+1), MPI::DOUBLE, V_local->data, N * N * 2 * (kpmax+1), MPI::DOUBLE, 0);
             MPI::COMM_WORLD.Bcast(H->data, kpmax * kpmax, MPI::DOUBLE, 0);
-            
-            lanczos(kmax-1, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V, np);
+            lanczos(kmax-1, kpmax, rank, M, N, H, V, V_local, np);
         }
     }
     
@@ -233,6 +228,8 @@ int main(int argc, char *argv[]) {
     }
     gsl_matrix_free (H);
     gsl_matrix_free (V);
+    gsl_matrix_free (V_local);
+
     if(rank == 0) {
         
         gsl_eigen_symmv_free (w);
@@ -288,8 +285,8 @@ void gsl_matrix_mul(const gsl_matrix *a, const gsl_matrix *b, gsl_matrix *c)
 }
 
 
-/* Compute H matrix */
-void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Ymax, double Bfield, gsl_matrix *H, gsl_matrix *V, int np) {
+/* Compute H matrix, collective psi into V (when rank==0) */
+void lanczos(int start, int end, int rank, int M, int N, gsl_matrix *H, gsl_matrix *V, gsl_matrix *V_local, int np) {
     int top = rank - M;
     int bottom = rank + M;
     int left = rank - 1;
@@ -320,7 +317,7 @@ void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Yma
     
         for (int itr = 0; itr <= start; itr++) {
             for (int j = 0; j < N2; j++) {
-                Local_Psi[itr][j] = gsl_matrix_get(V, j + rank * N2, itr);
+                Local_Psi[itr][j] = gsl_matrix_get(V_local, j, itr);
             }
             sp.setAlpha(gsl_matrix_get(H, itr, itr));
             sp.setBeta(gsl_matrix_get(H, itr, itr+1));
@@ -328,11 +325,6 @@ void lanczos(int start, int end, int rank, int M, int N, double Ymin, double Yma
         }
     }
     
-    for (int itr = 0; itr <= start; itr++) {
-        for (int j = 0; j < Ntot * Ntot * 2; j++) {
-            Global_Psi[itr][j] = gsl_matrix_get(V, j, itr);
-        }
-    }
     if(start > 0) {sp.counts -= 1;}
     
     for (int itr = start; itr < end; itr++ ) {

@@ -1,5 +1,5 @@
 N = 128;
-filename = strcat('eigenvector2_', num2str(N));
+filename = strcat('eigenvector0_', num2str(N));
 filename = strcat(filename, '.txt');
 
 x = load(filename);
