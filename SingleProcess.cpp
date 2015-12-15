@@ -46,6 +46,7 @@ SingleProcess::SingleProcess(int N, int rank, int M, double L, int kmax, int pma
     }
     for(int i = 0; i < N; i++) {
         Y[i] = Ymin + (i + 0.5) * (Ymax - Ymin) / N;
+        X[i] = Xmin + (i + 0.5) * (Xmax - Xmin) / N;
     }
     double norm = sqrt(innerProduct(0, 0));
     for(int i = 0; i < N * N; i++) {
