@@ -6,7 +6,6 @@
  **************************************************************/
 //mpic++ -std=c++11 SingleProcess.cpp ChargedParticle.cpp -lgsl -lgslcblas -static-libstdc++
 
-
 #include<iostream>
 #include<fstream>
 #include<sstream>
@@ -82,10 +81,8 @@ int main(int argc, char *argv[]) {
     gsl_eigen_symmv_workspace *w;
     gsl_matrix *V;
     gsl_matrix *V_new;
-    gsl_matrix *V_local;
     
     V = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
-    V_local = gsl_matrix_alloc(N * N * 2, kpmax+1);
     H = gsl_matrix_alloc(kpmax, kpmax);
     
     
@@ -200,12 +197,8 @@ int main(int argc, char *argv[]) {
             MPI::COMM_WORLD.Bcast(H->data, kpmax * kpmax, MPI::DOUBLE, 0);
             
             lanczos(kmax-1, kpmax, rank, M, N, Ymin, Ymax, Bfield, H, V, np);
-   
-        
-        }
+        }
     }
-    
-    
     
     if (rank == 0) {
         /* Output groundstate to file */
@@ -240,7 +233,6 @@ int main(int argc, char *argv[]) {
     }
     gsl_matrix_free (H);
     gsl_matrix_free (V);
-    gsl_matrix_free (V_local);
     if(rank == 0) {
         
         gsl_eigen_symmv_free (w);
