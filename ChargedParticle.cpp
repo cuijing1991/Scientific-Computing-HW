@@ -12,11 +12,11 @@
 #include<string>
 #include<vector>
 #include<cmath>
+#include<chrono>
 #include <mpi.h>
 #include <gsl/gsl_errno.h>
 #include <gsl/gsl_blas.h>
 #include <gsl/gsl_math.h>
-
 #include <gsl/gsl_matrix.h>
 #include <gsl/gsl_vector.h>
 #include <gsl/gsl_eigen.h>
@@ -28,11 +28,11 @@ using namespace std;
 const double eps = 0.0001;
 const int nrestart = 10000;
 const int kmax = 4;
-const int pmax = 40;
+const int pmax = 20;
 const int kpmax = kmax + pmax;
 const double L = 10;
 const int Ntot = 256;
-const double Bfield = 0.00005;
+const double Bfield = 0.00002;
 
 
 /* Convert vector index to 2D Cartesian coordinates (x,y) */
@@ -45,6 +45,9 @@ void gsl_matrix_mul(const gsl_matrix *a, const gsl_matrix *b, gsl_matrix *c);
 
 
 int main(int argc, char *argv[]) {
+
+  auto start = std::chrono::high_resolution_clock::now();
+
     // Set up the grid
     // Physical length of the system is (2*L) * (2*L)
     // Node number is M * M = np, assume N is even
@@ -73,19 +76,19 @@ int main(int argc, char *argv[]) {
     gsl_matrix *evec;
     gsl_eigen_symmv_workspace *w;
     gsl_matrix *V;
-    gsl_matrix *V_new;
     gsl_matrix *V_local;
-    
+    gsl_matrix *V_local_new;
+
     V_local = gsl_matrix_alloc(N * N * 2, kpmax+1);
-    V = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
+    V_local_new = gsl_matrix_alloc(N * N * 2, kpmax+1);
     H = gsl_matrix_alloc(kpmax, kpmax);
+    Q = gsl_matrix_alloc(kpmax, kpmax);
     
     
     if (rank == 0) {
         
-        V_new = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
+        V = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
         QR = gsl_matrix_alloc (kpmax, kpmax);
-        Q = gsl_matrix_alloc (kpmax, kpmax);
         Qt = gsl_matrix_alloc (kpmax, kpmax);
         R = gsl_matrix_alloc (kpmax, kpmax);
         Hplus = gsl_matrix_alloc (kpmax, kpmax);
@@ -136,12 +139,14 @@ int main(int argc, char *argv[]) {
             if ( eknown == kmax ) {
                 for (int k = 0; k < kmax; k++) {
                     EigenValue[k] = gsl_vector_get (eval, k);
+                    
                     for (int n = 0; n < Ntot * Ntot * 2; n++) {
                         EigenVector[k][n] = 0.0;
                         for (int m = 0; m < kpmax; m++) {
                             EigenVector[k][n] += gsl_matrix_get(V, n, m) * gsl_matrix_get ( evec, m, k);
                         }
                     }
+                    
                 }
                 
                 converged = true;
@@ -170,26 +175,24 @@ int main(int argc, char *argv[]) {
                 gsl_matrix_mul (Qt, Hplus, Hplus_new);
                 gsl_matrix_memcpy (Hplus, Hplus_new);
             }
-            gsl_matrix_mul (V, Q, V_new);
-            
-            for(int j = 0; j < kmax; j++) {
-                for (int i = 0; i < Ntot * Ntot * 2 ; i++) {
-                    gsl_matrix_set(V, i, j, gsl_matrix_get(V_new, i, j));
-                }
+            cout << "mark1" << endl;
+            cout << "mark2" << endl;
+              for(int j = 0; j < kmax; j++) {
                 gsl_matrix_set(H, j, j, gsl_matrix_get (Hplus, j, j));
                 gsl_matrix_set(H, j+1, j, gsl_matrix_get (Hplus, j+1, j));
                 gsl_matrix_set(H, j, j+1, gsl_matrix_get (Hplus, j, j+1));
             }
-            
+            cout << "mark3" << endl;
             cout << "Lanczos Iteration : " << itr << endl;
         }
         
         MPI::COMM_WORLD.Bcast(&converged, 1, MPI::BOOL, 0);
         if(converged) break;
         else {
-            
-            MPI::COMM_WORLD.Scatter(V->data, N * N * 2 * (kpmax+1), MPI::DOUBLE, V_local->data, N * N * 2 * (kpmax+1), MPI::DOUBLE, 0);
             MPI::COMM_WORLD.Bcast(H->data, kpmax * kpmax, MPI::DOUBLE, 0);
+            MPI::COMM_WORLD.Bcast(Q->data, kpmax * kpmax, MPI::DOUBLE, 0);
+            gsl_matrix_mul(V_local, Q, V_local_new);
+            gsl_matrix_memcpy(V_local, V_local_new);
             lanczos(kmax-1, kpmax, rank, M, N, H, V, V_local, np);
         }
     }
@@ -226,9 +229,9 @@ int main(int argc, char *argv[]) {
         
     }
     gsl_matrix_free (H);
-    gsl_matrix_free (V);
     gsl_matrix_free (V_local);
-
+    gsl_matrix_free (Q);
+    gsl_matrix_free (V_local_new);
     if(rank == 0) {
         
         gsl_eigen_symmv_free (w);
@@ -236,16 +239,21 @@ int main(int argc, char *argv[]) {
         gsl_matrix_free (evec);
         gsl_vector_free (tau);
         gsl_matrix_free (QR);
-        gsl_matrix_free (Q);
         gsl_matrix_free (R);
         gsl_matrix_free (Hplus);
         gsl_matrix_free (Qt);
         gsl_matrix_free (Hplus_new);
         gsl_matrix_free (Q_new);
         gsl_matrix_free (I);
-        gsl_matrix_free (V_new);
+        gsl_matrix_free (V);
     }
     
+  
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    if (rank == 0)
+      cout << "Time (microseconds): " << std::chrono::duration_cast<std::chrono::microseconds>(end-start).count() << endl;
+   
     // Close MPI
     MPI::Finalize();
 }
@@ -405,13 +413,17 @@ void lanczos(int start, int end, int rank, int M, int N, gsl_matrix *H, gsl_matr
         sp.updatePsiB();
     }
     
-    for (int i = start; i <= end; i++) {
+    for (int i = 0; i <= end; i++) {
         MPI::COMM_WORLD.Gather(&(sp.getPsi(i).front()), N2, MPI::DOUBLE, &(Global_Psi[i].front()), N2, MPI::DOUBLE, 0);
         if( rank == 0) {
             for (int j = 0; j < Ntot * Ntot * 2; j++) {
                 gsl_matrix_set(V, j, i, Global_Psi[i][j]);
             }
         }
+	Local_Psi[i] = sp.getPsi(i);
+	for (int j = 0; j < N * N * 2; j++) {
+	  gsl_matrix_set(V_local, j, i, Local_Psi[i][j]);
+	}
     }
 }
 
