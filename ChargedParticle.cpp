@@ -25,15 +25,14 @@
 
 using namespace std;
 
-
 const double eps = 0.0001;
-const int nrestart = 2000;
+const int nrestart = 10000;
 const int kmax = 4;
 const int pmax = 40;
 const int kpmax = kmax + pmax;
-const double L = 20;
-const int Ntot = 128;
-const double Bfield = 1;
+const double L = 10;
+const int Ntot = 256;
+const double Bfield = 0.00005;
 
 
 /* Convert vector index to 2D Cartesian coordinates (x,y) */
@@ -340,27 +339,27 @@ void lanczos(int start, int end, int rank, int M, int N, gsl_matrix *H, gsl_matr
         
         // Use MPI blocking send and receive
         // Send to top:
-        if (rank / M % 2 == 1) { MPI::COMM_WORLD.Send(&topSendBuffer.front(), N*2, MPI::DOUBLE, top, 0); }
-        else { MPI::COMM_WORLD.Recv(&bottomReceiveBuffer.front(), N*2, MPI::DOUBLE, bottom, 0); }
+        if (rank / M % 2 == 1) { if(rank / M != 0) MPI::COMM_WORLD.Send(&topSendBuffer.front(), N*2, MPI::DOUBLE, top, 0); }
+        else { if(rank / M != M-1) MPI::COMM_WORLD.Recv(&bottomReceiveBuffer.front(), N*2, MPI::DOUBLE, bottom, 0); }
         if (rank / M % 2 == 0) { if(rank / M != 0) MPI::COMM_WORLD.Send(&topSendBuffer.front(), N*2, MPI::DOUBLE, top, 0); }
         else { if(rank / M != M-1) MPI::COMM_WORLD.Recv(&bottomReceiveBuffer.front(), N*2, MPI::DOUBLE, bottom, 0); }
 
         // Send to bottom:
-        if (rank / M % 2 == 0) { MPI::COMM_WORLD.Send(&bottomSendBuffer.front(), N*2, MPI::DOUBLE, bottom, 0); }
-        else { MPI::COMM_WORLD.Recv(&topReceiveBuffer.front(), N*2, MPI::DOUBLE, top, 0); }
+        if (rank / M % 2 == 0) { if(rank / M != M-1) MPI::COMM_WORLD.Send(&bottomSendBuffer.front(), N*2, MPI::DOUBLE, bottom, 0); }
+        else { if(rank / M != 0) MPI::COMM_WORLD.Recv(&topReceiveBuffer.front(), N*2, MPI::DOUBLE, top, 0); }
         if (rank / M % 2 == 1) { if(rank / M != M-1) MPI::COMM_WORLD.Send(&bottomSendBuffer.front(), N*2, MPI::DOUBLE, bottom, 0); }
         else { if(rank / M != 0) MPI::COMM_WORLD.Recv(&topReceiveBuffer.front(), N*2, MPI::DOUBLE, top, 0); }
         
         
         //Send to right:
-        if (rank % M % 2 == 0) { MPI::COMM_WORLD.Send(&rightSendBuffer.front(), N*2, MPI::DOUBLE, right, 2); }
-        else { MPI::COMM_WORLD.Recv(&leftReceiveBuffer.front(), N*2, MPI::DOUBLE, left, 2); }
+        if (rank % M % 2 == 0) { if(rank % M != M-1) MPI::COMM_WORLD.Send(&rightSendBuffer.front(), N*2, MPI::DOUBLE, right, 2); }
+        else { if(rank % M != 0) MPI::COMM_WORLD.Recv(&leftReceiveBuffer.front(), N*2, MPI::DOUBLE, left, 2); }
         if (rank % M % 2 == 1) { if(rank % M != M-1) MPI::COMM_WORLD.Send(&rightSendBuffer.front(), N*2, MPI::DOUBLE, right, 2); }
         else { if(rank % M != 0) MPI::COMM_WORLD.Recv(&leftReceiveBuffer.front(), N*2, MPI::DOUBLE, left, 2); }
 
         //Send to left:
-        if (rank % M % 2 == 1) { MPI::COMM_WORLD.Send(&leftSendBuffer.front(), N*2, MPI::DOUBLE, left, 0); }
-        else { MPI::COMM_WORLD.Recv(&rightReceiveBuffer.front(), N*2, MPI::DOUBLE, right, 0); }
+        if (rank % M % 2 == 1) { if(rank % M != 0) MPI::COMM_WORLD.Send(&leftSendBuffer.front(), N*2, MPI::DOUBLE, left, 0); }
+        else { if(rank % M != M-1) MPI::COMM_WORLD.Recv(&rightReceiveBuffer.front(), N*2, MPI::DOUBLE, right, 0); }
         if (rank % M % 2 == 0) { if(rank % M != 0) MPI::COMM_WORLD.Send(&leftSendBuffer.front(), N*2, MPI::DOUBLE, left, 0); }
         else { if(rank % M != M-1) MPI::COMM_WORLD.Recv(&rightReceiveBuffer.front(), N*2, MPI::DOUBLE, right, 0); }
 
