@@ -32,7 +32,7 @@ const int pmax = 20;
 const int kpmax = kmax + pmax;
 const double L = 10;
 const int Ntot = 256;
-const double Bfield = 0.00002;
+const double Bfield = 0.00001;
 
 
 /* Convert vector index to 2D Cartesian coordinates (x,y) */
@@ -79,15 +79,15 @@ int main(int argc, char *argv[]) {
     gsl_matrix *V_local;
     gsl_matrix *V_local_new;
 
-    V_local = gsl_matrix_alloc(N * N * 2, kpmax+1);
-    V_local_new = gsl_matrix_alloc(N * N * 2, kpmax+1);
+    V_local = gsl_matrix_alloc(N * N * 2, kpmax);
+    V_local_new = gsl_matrix_alloc(N * N * 2, kpmax);
     H = gsl_matrix_alloc(kpmax, kpmax);
     Q = gsl_matrix_alloc(kpmax, kpmax);
     
     
     if (rank == 0) {
         
-        V = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax+1);
+        V = gsl_matrix_alloc(Ntot * Ntot * 2, kpmax);
         QR = gsl_matrix_alloc (kpmax, kpmax);
         Qt = gsl_matrix_alloc (kpmax, kpmax);
         R = gsl_matrix_alloc (kpmax, kpmax);
@@ -137,20 +137,7 @@ int main(int argc, char *argv[]) {
             cout << eknown << " Eigenvalues Converged" << endl;
             
             if ( eknown == kmax ) {
-                for (int k = 0; k < kmax; k++) {
-                    EigenValue[k] = gsl_vector_get (eval, k);
-                    
-                    for (int n = 0; n < Ntot * Ntot * 2; n++) {
-                        EigenVector[k][n] = 0.0;
-                        for (int m = 0; m < kpmax; m++) {
-                            EigenVector[k][n] += gsl_matrix_get(V, n, m) * gsl_matrix_get ( evec, m, k);
-                        }
-                    }
-                    
-                }
-                
                 converged = true;
-                
             }
             /*****************************************************************************************/
             
@@ -177,7 +164,7 @@ int main(int argc, char *argv[]) {
             }
             cout << "mark1" << endl;
             cout << "mark2" << endl;
-              for(int j = 0; j < kmax; j++) {
+            for(int j = 0; j < kmax; j++) {
                 gsl_matrix_set(H, j, j, gsl_matrix_get (Hplus, j, j));
                 gsl_matrix_set(H, j+1, j, gsl_matrix_get (Hplus, j+1, j));
                 gsl_matrix_set(H, j, j+1, gsl_matrix_get (Hplus, j, j+1));
@@ -197,7 +184,22 @@ int main(int argc, char *argv[]) {
         }
     }
     
+    
+    MPI::COMM_WORLD.Gather(V_local->data, N * N * 2 * (kpmax), MPI::DOUBLE, V->data, N * N * 2 * (kpmax), MPI::DOUBLE, 0);
+    
     if (rank == 0) {
+        
+        for (int k = 0; k < kmax; k++) {
+            EigenValue[k] = gsl_vector_get (eval, k);
+            for (int n = 0; n < Ntot * Ntot * 2; n++) {
+                EigenVector[k][n] = 0.0;
+                for (int m = 0; m < kpmax; m++) {
+                    EigenVector[k][n] += gsl_matrix_get(V, n, m) * gsl_matrix_get ( evec, m, k);
+                }
+            }
+            
+        }
+        
         /* Output groundstate to file */
         ostringstream convert;
         convert << Ntot;
@@ -413,17 +415,11 @@ void lanczos(int start, int end, int rank, int M, int N, gsl_matrix *H, gsl_matr
         sp.updatePsiB();
     }
     
-    for (int i = 0; i <= end; i++) {
-        MPI::COMM_WORLD.Gather(&(sp.getPsi(i).front()), N2, MPI::DOUBLE, &(Global_Psi[i].front()), N2, MPI::DOUBLE, 0);
-        if( rank == 0) {
-            for (int j = 0; j < Ntot * Ntot * 2; j++) {
-                gsl_matrix_set(V, j, i, Global_Psi[i][j]);
-            }
+    for (int i = 0; i < end; i++) {
+        Local_Psi[i] = sp.getPsi(i);
+        for (int j = 0; j < N * N * 2; j++) {
+            gsl_matrix_set(V_local, j, i, Local_Psi[i][j]);
         }
-	Local_Psi[i] = sp.getPsi(i);
-	for (int j = 0; j < N * N * 2; j++) {
-	  gsl_matrix_set(V_local, j, i, Local_Psi[i][j]);
-	}
     }
 }
 
