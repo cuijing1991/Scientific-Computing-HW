@@ -1,5 +1,4 @@
 CC = mpic++ -std=c++11
-CFLAGS = 
 LIBS = -lgsl -lgslcblas
 SRCS = ChargedParticle.cpp SingleProcess.cpp
 OBJS = $(SRCS:.c=.o)
